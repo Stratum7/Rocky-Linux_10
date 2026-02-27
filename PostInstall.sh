@@ -141,7 +141,7 @@ PS1="\n \n\
 │\n\
 └\[\033[38;5;25m\]───\[$(tput sgr0)\]\[\033[38;5;15m\] \
 \[$(tput sgr0)\]\[\033[38;5;25m\]\\$\[$(tput sgr0)\]\[\033[38;5;15m\] : \[$(tput sgr0)\]"
-
+ EOF
 
 
 chmod +x /etc/profile.d/stratum7_prompt.sh
