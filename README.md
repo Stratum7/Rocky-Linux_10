@@ -1,8 +1,8 @@
 Execute via root
 
-1) Baixe as modificações post-install
-curl -fsSL https://install.stratum7.com.br/post-install -o postinstall.sh
-chmod +x postinstall.sh
+1) Baixe as modificações post-install \
+curl -fsSL https://install.stratum7.com.br/post-install -o postinstall.sh \
+chmod +x postinstall.sh \
 ./postinstall.sh
 
 2) Instalar MariaDB
