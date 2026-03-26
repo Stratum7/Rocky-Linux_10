@@ -18,6 +18,7 @@ command -v awk >/dev/null 2>&1 || { echo "awk nao encontrado."; exit 1; }
 command -v grep >/dev/null 2>&1 || { echo "grep nao encontrado."; exit 1; }
 command -v sed >/dev/null 2>&1 || { echo "sed nao encontrado."; exit 1; }
 command -v tr >/dev/null 2>&1 || { echo "tr nao encontrado."; exit 1; }
+command -v systemd-run >/dev/null 2>&1 || { echo "systemd-run nao encontrado."; exit 1; }
 
 print_line() {
   printf '%*s\n' "${COLUMNS:-60}" '' | tr ' ' '='
@@ -327,6 +328,7 @@ NC_DATA="$MONTAGEM"
 NC_CONFIG="$NC_PATH/config/config.php"
 PHP_FPM_SOCK="/run/php-fpm/www.sock"
 POST_INSTALL_SCRIPT="/root/nextcloud-postinstall-disable-apps.sh"
+POST_INSTALL_UNIT="nextcloud-postinstall-once"
 
 echo
 echo "CONFIGURACAO DE REDE E SISTEMA"
@@ -698,6 +700,7 @@ cat > "$POST_INSTALL_SCRIPT" <<EOF
 set -euo pipefail
 
 NC_PATH="$NC_PATH"
+NC_DATA="$NC_DATA"
 DB_HOST="$DB_HOST"
 DB_NAME="$DB_NAME"
 DB_USER="$DB_USER"
@@ -717,6 +720,13 @@ if [[ ! -f "\$NC_PATH/occ" ]]; then
   echo "OCC nao encontrado em \$NC_PATH/occ"
   exit 1
 fi
+
+echo "Parando cron do Nextcloud temporariamente..."
+systemctl stop nextcloud-cron.timer || true
+systemctl stop nextcloud-cron.service || true
+
+echo "Entrando em modo de manutencao..."
+sudo -u apache php "\$NC_PATH/occ" maintenance:mode --on || true
 
 echo "Desabilitando apps opcionais..."
 sudo -u apache php "\$NC_PATH/occ" app:disable firstrunwizard || true
@@ -750,52 +760,43 @@ DELETE FROM oc_jobs WHERE class LIKE 'OCA\\\\Templates\\\\%';
 DELETE FROM oc_jobs WHERE class LIKE 'OCA\\\\WeatherStatus\\\\%';
 SQL
 
+echo "Limpando diretorios updater antigos..."
+find "\$NC_DATA" -maxdepth 1 -type d -name 'updater-*' -exec rm -rf {} + 2>/dev/null || true
+find /mnt/LOCAL/StorageData-01 -maxdepth 1 -type d -name 'updater-*' -exec rm -rf {} + 2>/dev/null || true
+find /var/www/html/StorageData-01 -maxdepth 1 -type d -name 'updater-*' -exec rm -rf {} + 2>/dev/null || true
+
 echo "Executando reparos..."
-sudo -u apache php "\$NC_PATH/occ" maintenance:mode --on
 sudo -u apache php "\$NC_PATH/occ" db:add-missing-indices || true
 sudo -u apache php "\$NC_PATH/occ" maintenance:repair --include-expensive || true
 sudo -u apache php "\$NC_PATH/occ" maintenance:update:htaccess || true
 sudo -u apache php "\$NC_PATH/occ" maintenance:repair || true
-sudo -u apache php "\$NC_PATH/occ" maintenance:mode --off
 sudo -u apache php "\$NC_PATH/occ" files:scan-app-data || true
-sudo -u apache php "\$NC_PATH/occ" maintenance:repair || true
-sudo -u apache php "\$NC_PATH/occ" status
 
-echo
-echo "Pos-instalacao concluida."
+echo "Saindo do modo de manutencao..."
+sudo -u apache php "\$NC_PATH/occ" maintenance:mode --off || true
+
+echo "Rodando cron manual uma vez com a fila limpa..."
+sudo -u apache php -f "\$NC_PATH/cron.php" || true
+
+echo "Reativando cron..."
+systemctl start nextcloud-cron.timer || true
+
+echo "Concluido."
 EOF
 
 chmod 700 "$POST_INSTALL_SCRIPT"
 
-cat > /etc/systemd/system/nextcloud-postinstall-disable-apps.service <<EOF
-[Unit]
-Description=Nextcloud Post Install Disable Optional Apps
-After=network.target mariadb.service mysqld.service httpd.service php-fpm.service valkey.service nextcloud-cron.service
-Wants=httpd.service php-fpm.service valkey.service
+echo
+echo "AGENDANDO POS-INSTALACAO ONE-SHOT"
+print_line
 
-[Service]
-Type=oneshot
-ExecStart=$POST_INSTALL_SCRIPT
+systemctl stop "${POST_INSTALL_UNIT}.service" 2>/dev/null || true
+systemctl reset-failed "${POST_INSTALL_UNIT}.service" 2>/dev/null || true
 
-[Install]
-WantedBy=multi-user.target
-EOF
-
-cat > /etc/systemd/system/nextcloud-postinstall-disable-apps.timer <<EOF
-[Unit]
-Description=Executa pos-instalacao do Nextcloud apos estabilizacao inicial
-
-[Timer]
-OnBootSec=30min
-Persistent=true
-Unit=nextcloud-postinstall-disable-apps.service
-
-[Install]
-WantedBy=timers.target
-EOF
-
-systemctl daemon-reload
-systemctl enable --now nextcloud-postinstall-disable-apps.timer
+systemd-run \
+  --unit="${POST_INSTALL_UNIT}" \
+  --on-active=30m \
+  "$POST_INSTALL_SCRIPT"
 
 chown -R apache:apache "$NC_PATH" "$NC_DATA"
 find "$NC_PATH" -type d -exec chmod 750 {} \;
@@ -825,7 +826,7 @@ print_line
 echo "DRIVE FINALIZADO COM SUCESSO"
 echo "Acesse: https://$FQDN"
 echo
-echo "DESABILITACAO AUTOMATICA DOS APPS OPCIONAIS AGENDADA"
+echo "POS-INSTALACAO ONE-SHOT AGENDADA PARA 30 MINUTOS"
 echo "Script auxiliar: $POST_INSTALL_SCRIPT"
-echo "Timer systemd : nextcloud-postinstall-disable-apps.timer"
+echo "Unidade one-shot: ${POST_INSTALL_UNIT}.service"
 print_line
