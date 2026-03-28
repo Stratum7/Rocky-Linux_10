@@ -277,6 +277,15 @@ SERVERID="$REPLY"
 ler_sn_obrigatorio "Deseja adicionar e formatar novo HD? (s/n)"
 ADICIONAR_HD="$REPLY"
 
+ler_sn_obrigatorio "Deseja desativar o AppAPI apos a instalacao? (s/n)"
+DESATIVAR_APPAPI="$REPLY"
+
+ler_sn_obrigatorio "Deseja desativar o First run wizard apos a instalacao? (s/n)"
+DESATIVAR_FIRSTRUNWIZARD="$REPLY"
+
+ler_sn_obrigatorio "Deseja desativar o Nextcloud announcements apos a instalacao? (s/n)"
+DESATIVAR_NEXTCLOUD_ANNOUNCEMENTS="$REPLY"
+
 MONTAGEM="/var/www/html/StorageData-01"
 
 if [[ "$ADICIONAR_HD" == "s" ]]; then
@@ -327,8 +336,6 @@ NC_PATH="/var/www/html/drive"
 NC_DATA="$MONTAGEM"
 NC_CONFIG="$NC_PATH/config/config.php"
 PHP_FPM_SOCK="/run/php-fpm/www.sock"
-POST_INSTALL_SCRIPT="/root/nextcloud-postinstall-disable-apps.sh"
-POST_INSTALL_UNIT="nextcloud-postinstall-once"
 
 echo
 echo "CONFIGURACAO DE REDE E SISTEMA"
@@ -695,108 +702,37 @@ if [[ -n "${ADMIN_DIR:-}" && -d "$ADMIN_DIR" ]]; then
   echo "Arquivos de exemplo do usuario $ADMIN_USER removidos."
 fi
 
-cat > "$POST_INSTALL_SCRIPT" <<EOF
-#!/bin/bash
-set -euo pipefail
-
-NC_PATH="$NC_PATH"
-NC_DATA="$NC_DATA"
-DB_HOST="$DB_HOST"
-DB_NAME="$DB_NAME"
-DB_USER="$DB_USER"
-DB_PASS="$DB_PASS"
-
-echo "============================================================"
-echo "   POS-INSTALACAO NEXTCLOUD - DESABILITAR APPS OPCIONAIS"
-echo "============================================================"
 echo
-
-if [[ \$EUID -ne 0 ]]; then
-  echo "Execute este script como root."
-  exit 1
-fi
-
-if [[ ! -f "\$NC_PATH/occ" ]]; then
-  echo "OCC nao encontrado em \$NC_PATH/occ"
-  exit 1
-fi
-
-echo "Parando cron do Nextcloud temporariamente..."
-systemctl stop nextcloud-cron.timer || true
-systemctl stop nextcloud-cron.service || true
-
-echo "Entrando em modo de manutencao..."
-sudo -u apache php "\$NC_PATH/occ" maintenance:mode --on || true
-
-echo "Desabilitando apps opcionais..."
-sudo -u apache php "\$NC_PATH/occ" app:disable firstrunwizard || true
-sudo -u apache php "\$NC_PATH/occ" app:disable weather_status || true
-sudo -u apache php "\$NC_PATH/occ" app:disable support || true
-sudo -u apache php "\$NC_PATH/occ" app:disable recommendations || true
-sudo -u apache php "\$NC_PATH/occ" app:disable dashboard || true
-sudo -u apache php "\$NC_PATH/occ" app:disable user_status || true
-sudo -u apache php "\$NC_PATH/occ" app:disable app_api || true
-sudo -u apache php "\$NC_PATH/occ" app:disable templates || true
-sudo -u apache php "\$NC_PATH/occ" app:disable text || true
-sudo -u apache php "\$NC_PATH/occ" app:disable richdocuments || true
-sudo -u apache php "\$NC_PATH/occ" app:disable richdocumentscode || true
-
-echo "Limpando jobs orfaos..."
-mysql \\
-  --host="\$DB_HOST" \\
-  --user="\$DB_USER" \\
-  --password="\$DB_PASS" \\
-  "\$DB_NAME" <<'SQL' || true
-DELETE FROM oc_jobs WHERE class LIKE 'OCA\\\\FirstRunWizard\\\\%';
-DELETE FROM oc_jobs WHERE class LIKE 'OCA\\\\UserStatus\\\\%';
-DELETE FROM oc_jobs WHERE class LIKE 'OCA\\\\Text\\\\%';
-DELETE FROM oc_jobs WHERE class LIKE 'OCA\\\\Support\\\\%';
-DELETE FROM oc_jobs WHERE class LIKE 'OCA\\\\AppAPI\\\\%';
-DELETE FROM oc_jobs WHERE class LIKE 'OCA\\\\Recommendations\\\\%';
-DELETE FROM oc_jobs WHERE class LIKE 'OCA\\\\Dashboard\\\\%';
-DELETE FROM oc_jobs WHERE class LIKE 'OCA\\\\Richdocuments\\\\%';
-DELETE FROM oc_jobs WHERE class LIKE 'OCA\\\\RichdocumentsCode\\\\%';
-DELETE FROM oc_jobs WHERE class LIKE 'OCA\\\\Templates\\\\%';
-DELETE FROM oc_jobs WHERE class LIKE 'OCA\\\\WeatherStatus\\\\%';
-SQL
-
-echo "Limpando diretorios updater antigos..."
-find "\$NC_DATA" -maxdepth 1 -type d -name 'updater-*' -exec rm -rf {} + 2>/dev/null || true
-find /mnt/LOCAL/StorageData-01 -maxdepth 1 -type d -name 'updater-*' -exec rm -rf {} + 2>/dev/null || true
-find /var/www/html/StorageData-01 -maxdepth 1 -type d -name 'updater-*' -exec rm -rf {} + 2>/dev/null || true
-
-echo "Executando reparos..."
-sudo -u apache php "\$NC_PATH/occ" db:add-missing-indices || true
-sudo -u apache php "\$NC_PATH/occ" maintenance:repair --include-expensive || true
-sudo -u apache php "\$NC_PATH/occ" maintenance:update:htaccess || true
-sudo -u apache php "\$NC_PATH/occ" maintenance:repair || true
-sudo -u apache php "\$NC_PATH/occ" files:scan-app-data || true
-
-echo "Saindo do modo de manutencao..."
-sudo -u apache php "\$NC_PATH/occ" maintenance:mode --off || true
-
-echo "Rodando cron manual uma vez com a fila limpa..."
-sudo -u apache php -f "\$NC_PATH/cron.php" || true
-
-echo "Reativando cron..."
-systemctl start nextcloud-cron.timer || true
-
-echo "Concluido."
-EOF
-
-chmod 700 "$POST_INSTALL_SCRIPT"
-
-echo
-echo "AGENDANDO POS-INSTALACAO ONE-SHOT"
+echo "DESATIVACAO OPCIONAL DE APLICATIVOS"
 print_line
 
-systemctl stop "${POST_INSTALL_UNIT}.service" 2>/dev/null || true
-systemctl reset-failed "${POST_INSTALL_UNIT}.service" 2>/dev/null || true
+if [[ "$DESATIVAR_APPAPI" == "s" ]]; then
+  echo "Desativando AppAPI..."
+  sudo -u apache php "$NC_PATH/occ" app:disable app_api || true
+else
+  echo "AppAPI mantido ativo."
+fi
 
-systemd-run \
-  --unit="${POST_INSTALL_UNIT}" \
-  --on-active=30m \
-  "$POST_INSTALL_SCRIPT"
+if [[ "$DESATIVAR_FIRSTRUNWIZARD" == "s" ]]; then
+  echo "Desativando First run wizard..."
+  sudo -u apache php "$NC_PATH/occ" app:disable firstrunwizard || true
+else
+  echo "First run wizard mantido ativo."
+fi
+
+if [[ "$DESATIVAR_NEXTCLOUD_ANNOUNCEMENTS" == "s" ]]; then
+  echo "Desativando Nextcloud announcements..."
+  sudo -u apache php "$NC_PATH/occ" app:disable nextcloud_announcements || true
+else
+  echo "Nextcloud announcements mantido ativo."
+fi
+
+echo
+echo "REPARO FINAL APOS AJUSTE DE APLICATIVOS"
+print_line
+
+sudo -u apache php "$NC_PATH/occ" maintenance:repair || true
+sudo -u apache php "$NC_PATH/occ" files:scan-app-data || true
 
 chown -R apache:apache "$NC_PATH" "$NC_DATA"
 find "$NC_PATH" -type d -exec chmod 750 {} \;
@@ -826,7 +762,8 @@ print_line
 echo "DRIVE FINALIZADO COM SUCESSO"
 echo "Acesse: https://$FQDN"
 echo
-echo "POS-INSTALACAO ONE-SHOT AGENDADA PARA 30 MINUTOS"
-echo "Script auxiliar: $POST_INSTALL_SCRIPT"
-echo "Unidade one-shot: ${POST_INSTALL_UNIT}.service"
+echo "RESUMO DOS APLICATIVOS OPCIONAIS"
+echo "AppAPI.........................: $DESATIVAR_APPAPI"
+echo "First run wizard...............: $DESATIVAR_FIRSTRUNWIZARD"
+echo "Nextcloud announcements........: $DESATIVAR_NEXTCLOUD_ANNOUNCEMENTS"
 print_line
